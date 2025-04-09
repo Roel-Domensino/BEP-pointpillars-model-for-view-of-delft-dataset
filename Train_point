@@ -10,6 +10,22 @@ from pointpillars.model import PointPillars
 from pointpillars.loss import Loss
 from torch.utils.tensorboard import SummaryWriter
 
+def compute_accuracy(predictions, ground_truth, nclasses):
+    """
+    Computes the accuracy for multi-class classification.
+    predictions: Tensor of predicted class labels.
+    ground_truth: Tensor of ground truth class labels.
+    nclasses: Number of classes in the classification task.
+    """
+    # Get the predicted class labels (assuming softmax is already applied)
+    pred_labels = predictions.argmax(dim=-1)
+
+    # Ignore the negative class (background)
+    correct = (pred_labels == ground_truth) & (ground_truth != nclasses)  # Ignore background class
+    accuracy = correct.sum().item() / (ground_truth != nclasses).sum().item()
+
+    return accuracy
+
 def save_summary(writer, loss_dict, global_step, tag, lr=None, momentum=None):
     for k, v in loss_dict.items():
         writer.add_scalar(f'{tag}/{k}', v, global_step)
@@ -21,16 +37,17 @@ def save_summary(writer, loss_dict, global_step, tag, lr=None, momentum=None):
 
 def main(args):
     setup_seed()
+
     train_dataset = Kitti(data_root=args.data_root,
                           split='train')
     val_dataset = Kitti(data_root=args.data_root,
                         split='val')
-    train_dataloader = get_dataloader(dataset=train_dataset, 
-                                      batch_size=args.batch_size, 
+    train_dataloader = get_dataloader(dataset=train_dataset,
+                                      batch_size=args.batch_size,
                                       num_workers=args.num_workers,
                                       shuffle=True)
-    val_dataloader = get_dataloader(dataset=val_dataset, 
-                                    batch_size=args.batch_size, 
+    val_dataloader = get_dataloader(dataset=val_dataset,
+                                    batch_size=args.batch_size,
                                     num_workers=args.num_workers,
                                     shuffle=False)
 
@@ -42,17 +59,17 @@ def main(args):
 
     max_iters = len(train_dataloader) * args.max_epoch
     init_lr = args.init_lr
-    optimizer = torch.optim.AdamW(params=pointpillars.parameters(), 
-                                  lr=init_lr, 
+    optimizer = torch.optim.AdamW(params=pointpillars.parameters(),
+                                  lr=init_lr,
                                   betas=(0.95, 0.99),
                                   weight_decay=0.01)
-    scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer,  
-                                                    max_lr=init_lr*10, 
-                                                    total_steps=max_iters, 
-                                                    pct_start=0.4, 
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer,
+                                                    max_lr=init_lr*10,
+                                                    total_steps=max_iters,
+                                                    pct_start=0.4,
                                                     anneal_strategy='cos',
-                                                    cycle_momentum=True, 
-                                                    base_momentum=0.95*0.895, 
+                                                    cycle_momentum=True,
+                                                    base_momentum=0.95*0.895,
                                                     max_momentum=0.95,
                                                     div_factor=10)
     saved_logs_path = os.path.join(args.saved_path, 'summary')
@@ -71,7 +88,7 @@ def main(args):
                     for j, item in enumerate(data_dict[key]):
                         if torch.is_tensor(item):
                             data_dict[key][j] = data_dict[key][j].cuda()
-            
+
             optimizer.zero_grad()
 
             batched_pts = data_dict['batched_pts']
@@ -79,17 +96,17 @@ def main(args):
             batched_labels = data_dict['batched_labels']
             batched_difficulty = data_dict['batched_difficulty']
             bbox_cls_pred, bbox_pred, bbox_dir_cls_pred, anchor_target_dict = \
-                pointpillars(batched_pts=batched_pts, 
+                pointpillars(batched_pts=batched_pts,
                              mode='train',
-                             batched_gt_bboxes=batched_gt_bboxes, 
+                             batched_gt_bboxes=batched_gt_bboxes,
                              batched_gt_labels=batched_labels)
-            
+
             bbox_cls_pred = bbox_cls_pred.permute(0, 2, 3, 1).reshape(-1, args.nclasses)
             bbox_pred = bbox_pred.permute(0, 2, 3, 1).reshape(-1, 7)
             bbox_dir_cls_pred = bbox_dir_cls_pred.permute(0, 2, 3, 1).reshape(-1, 2)
-            print(f"Shape of bbox_cls_pred: {bbox_cls_pred.shape}")  # Should be [batch_size * grid_size, args.nclasses]
-            print(f"Shape of bbox_pred: {bbox_pred.shape}")          # Should be [batch_size * grid_size, 7]
-            print(f"Shape of bbox_dir_cls_pred: {bbox_dir_cls_pred.shape}")  # Should be [batch_size * grid_size, 2]
+            #print(f"Shape of bbox_cls_pred: {bbox_cls_pred.shape}")  # Should be [batch_size * grid_size, args.nclasses]
+            #print(f"Shape of bbox_pred: {bbox_pred.shape}")          # Should be [batch_size * grid_size, 7]
+            #print(f"Shape of bbox_dir_cls_pred: {bbox_dir_cls_pred.shape}")  # Should be [batch_size * grid_size, 2]
 
             batched_bbox_labels = anchor_target_dict['batched_labels'].reshape(-1)
             batched_label_weights = anchor_target_dict['batched_label_weights'].reshape(-1)
@@ -98,10 +115,11 @@ def main(args):
             batched_dir_labels = anchor_target_dict['batched_dir_labels'].reshape(-1)
             # batched_dir_labels_weights = anchor_target_dict['batched_dir_labels_weights'].reshape(-1)
 
-            print(f"batched_bbox_labels = {batched_bbox_labels.shape}")
-            print(f"args.nclasses = {args.nclasses}")
+            print(f"batched_bbox_labels.shape = {batched_bbox_labels.shape}")
+            print(f"batched_bbox_labels = {batched_bbox_labels}")
+            #print(f"args.nclasses = {args.nclasses}")
             pos_idx = (batched_bbox_labels >= 0) & (batched_bbox_labels < args.nclasses)
-            print(f"Shape of pos_idx: {pos_idx.shape}")  # Should match batch_size * grid_size
+            #print(f"Shape of pos_idx: {pos_idx.shape}")  # Should match batch_size * grid_size
 
             print(f"pos_idx = {pos_idx}")
             bbox_pred = bbox_pred[pos_idx]
@@ -124,6 +142,15 @@ def main(args):
                                   num_cls_pos=num_cls_pos,
                                   batched_bbox_reg=batched_bbox_reg,
                                   batched_dir_labels=batched_dir_labels)
+            import torch.nn.functional as F
+
+            # Apply softmax to logits
+            probabilities = F.softmax(bbox_cls_pred, dim=-1)
+            print(bbox_cls_pred[:10])
+            # Print the probabilities of the first 10 examples
+            print(probabilities[:10])
+            # Print the first 10 predicted class probabilities
+            print(torch.argmax(bbox_cls_pred, dim=-1)[:10])  # Print the top predicted class labels
 
             loss = loss_dict['total_loss']
             loss.backward()
@@ -188,6 +215,8 @@ def main(args):
                 batched_bbox_labels[batched_bbox_labels < 0] = args.nclasses
                 batched_bbox_labels = batched_bbox_labels[batched_label_weights > 0]
 
+
+
                 loss_dict = loss_func(bbox_cls_pred=bbox_cls_pred,
                                     bbox_pred=bbox_pred,
                                     bbox_dir_cls_pred=bbox_dir_cls_pred,
@@ -195,6 +224,8 @@ def main(args):
                                     num_cls_pos=num_cls_pos,
                                     batched_bbox_reg=batched_bbox_reg,
                                     batched_dir_labels=batched_dir_labels)
+
+                #print(f"accuracy = {compute_accuracy(bbox_cls_pred,batched_bbox_labels,args.nclasses)}")
 
                 global_step = epoch * len(val_dataloader) + val_step + 1
                 if global_step % args.log_freq == 0:
@@ -210,9 +241,9 @@ if __name__ == '__main__':
     parser.add_argument('--saved_path', default='pillar_logs')
     parser.add_argument('--batch_size', type=int, default=6)
     parser.add_argument('--num_workers', type=int, default=4)
-    parser.add_argument('--nclasses', type=int, default=11)
+    parser.add_argument('--nclasses', type=int, default=3)
     parser.add_argument('--init_lr', type=float, default=0.00025)
-    parser.add_argument('--max_epoch', type=int, default=160)
+    parser.add_argument('--max_epoch', type=int, default=10)
     parser.add_argument('--log_freq', type=int, default=8)
     parser.add_argument('--ckpt_freq_epoch', type=int, default=20)
     parser.add_argument('--no_cuda', action='store_true',
