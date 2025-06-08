@@ -1,0 +1,82 @@
+import torch
+import numpy as np
+import os
+from vod.configuration import KittiLocations
+from vod.frame import FrameDataLoader, FrameTransformMatrix
+from vod.frame import homogeneous_transformation
+
+def filter_within_fov(xyz, max_distance=50.0, max_angle_deg=32.0):
+    """
+    xyz: tensor Nx3 or Nx2 in camera coordinate system (x forward, y left)
+    Filter points within max_distance and horizontal FoV ±max_angle_deg.
+    """
+    x, y = xyz[:, 0], xyz[:, 1]
+    r = torch.sqrt(x ** 2 + y ** 2)
+    angle = torch.atan2(y, x) * 180 / np.pi
+    mask = (r <= max_distance) & (angle >= -max_angle_deg) & (angle <= max_angle_deg)
+    return mask
+
+def transform_radar_to_camera(coords_radar, transforms):
+    """
+    coords_radar: Nx2 or Nx3 numpy array in radar coordinates (x,y,z)
+    transforms: FrameTransformMatrix object (already loaded for frame)
+    Returns Nx3 tensor in camera coordinate system.
+    """
+    n = coords_radar.shape[0]
+    coords_hom = np.hstack([coords_radar, np.ones((n, 1))])  # Nx4
+    coords_cam_hom = homogeneous_transformation(coords_hom, transforms.t_camera_radar)  # Nx4
+    coords_cam = coords_cam_hom[:, :3] / coords_cam_hom[:, 3:4]  # Normalize by w
+    return torch.tensor(coords_cam, dtype=torch.float32)
+
+def check_valid_labels(sample_id, label_dir):
+    label_path = os.path.join(label_dir, f"{sample_id}.txt")
+
+    # Load frame data and transforms
+    kitti_locations = KittiLocations(root_dir="/home/student2/Documents/Datasets/View_of_Delft_dataset_PUBLIC/view_of_delft_PUBLIC")
+    frame_data = FrameDataLoader(kitti_locations=kitti_locations,frame_number=sample_id)
+    transforms = FrameTransformMatrix(frame_data)
+
+    positions_radar = []
+
+    with open(label_path, 'r') as f:
+        lines = f.readlines()
+
+    for line in lines:
+        parts = line.strip().split()
+        if len(parts) >= 13:
+            try:
+                x = float(parts[11])  # radar x coordinate
+                y = float(parts[12])  # radar y coordinate
+                # If z available, use parts[13] else 0 (some files may have it)
+                z = float(parts[13]) if len(parts) > 13 else 0.0
+                positions_radar.append([x, y, z])
+            except ValueError:
+                continue
+
+    if not positions_radar:
+        return False
+
+    coords_radar_np = np.array(positions_radar)
+    coords_camera = transform_radar_to_camera(coords_radar_np, transforms)
+
+    mask = filter_within_fov(coords_camera)
+    return mask.any().item()  # True if any point inside FoV
+
+def create_filtered_id_list(id_list, label_dir, output_file):
+    filtered_ids = []
+    for sample_id in id_list:
+        if check_valid_labels(sample_id, label_dir):
+            filtered_ids.append(sample_id)
+
+    with open(output_file, 'w') as f:
+        for sid in filtered_ids:
+            f.write(sid + "\n")
+
+# Example usage
+train_ids_path = "/home/student2/Documents/Datasets/View_of_Delft_dataset_PUBLIC/PointPillars-main_dup_less_classes/Ids_shortened.txt"
+label_dir = "/home/student2/Documents/Datasets/View_of_Delft_dataset_PUBLIC/view_of_delft_PUBLIC/radar/training/label_2_edited"
+
+train_ids = [line.strip() for line in open(train_ids_path)]
+print(f"Total training IDs: {len(train_ids)}")
+
+create_filtered_id_list(train_ids, label_dir, "ids_edited_filtered.txt")
